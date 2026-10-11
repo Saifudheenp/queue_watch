@@ -17,7 +17,7 @@
     }
     h2 {
       margin-top: 5px;
-      margin-bottom: 15px;
+      margin-bottom: 12px;
       font-size: 1.25rem;
     }
     .container {
@@ -43,14 +43,45 @@
       height: 100%;
       pointer-events: none;
     }
-    #status {
+    .controls {
+      margin-top: 10px;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+    }
+    .btn {
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 6px;
       font-size: 0.9rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:active {
+      background: #3a3a3a;
+    }
+    .btn.active {
+      background: #ffcc00;
+      color: #000;
+      border-color: #ffcc00;
+      font-weight: bold;
+    }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    #status {
+      font-size: 0.85rem;
       color: #aaa;
       margin-top: 8px;
     }
     #log {
       margin-top: 12px;
-      height: 160px;
+      height: 150px;
       overflow-y: auto;
       text-align: left;
       max-width: 640px;
@@ -74,6 +105,11 @@
     <video id="video" autoplay muted playsinline></video>
     <canvas id="overlay"></canvas>
   </div>
+
+  <div class="controls">
+    <button id="torchBtn" class="btn" disabled>🔦 Flash: Off</button>
+  </div>
+
   <div id="status">Tap anywhere on the screen to enable audio alert...</div>
   <div id="log"></div>
 
@@ -89,9 +125,13 @@
     const canvas = document.getElementById('overlay');
     const logBox = document.getElementById('log');
     const statusBox = document.getElementById('status');
+    const torchBtn = document.getElementById('torchBtn');
 
     let audioCtx = null;
+    let videoTrack = null;
+    let isTorchOn = false;
 
+    // --- Web Audio Beep ---
     function playAlertBeep() {
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -122,6 +162,39 @@
       beep(880, now + 0.16, 0.18); // Second alert tone
     }
 
+    // --- Flash / Torch Controller ---
+    async function setupTorch(track) {
+      videoTrack = track;
+      try {
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        if (capabilities.torch) {
+          torchBtn.disabled = false;
+          torchBtn.addEventListener('click', toggleTorch);
+        } else {
+          torchBtn.textContent = "🔦 Flash Not Supported";
+          torchBtn.disabled = true;
+        }
+      } catch (e) {
+        torchBtn.textContent = "🔦 Flash Unavailable";
+        torchBtn.disabled = true;
+      }
+    }
+
+    async function toggleTorch() {
+      if (!videoTrack) return;
+      try {
+        isTorchOn = !isTorchOn;
+        await videoTrack.applyConstraints({
+          advanced: [{ torch: isTorchOn }]
+        });
+        torchBtn.textContent = isTorchOn ? "🔦 Flash: ON" : "🔦 Flash: OFF";
+        torchBtn.classList.toggle('active', isTorchOn);
+      } catch (err) {
+        console.error("Torch error:", err);
+        log(`Torch Error: ${err.message}`, "warn");
+      }
+    }
+
     function log(msg, type = "ok") {
       const p = document.createElement('div');
       p.className = type;
@@ -130,7 +203,7 @@
     }
 
     async function init() {
-      // Unlock audio context on first screen tap/click
+      // Audio unlock on user touch/click
       window.addEventListener('click', () => {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -147,7 +220,6 @@
 
       let stream;
       try {
-        // First try the strict environment (rear) camera
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { exact: "environment" },
@@ -156,7 +228,6 @@
           }
         });
       } catch (err) {
-        // Fallback for browsers that don't support 'exact'
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
@@ -167,14 +238,16 @@
       }
 
       video.srcObject = stream;
+      const track = stream.getVideoTracks()[0];
+      if (track) setupTorch(track);
+
       video.onloadedmetadata = () => {
-        statusBox.textContent = "Camera ready. Tap screen to ensure sound is enabled.";
+        statusBox.textContent = "Camera ready. Tap screen once to ensure sound is enabled.";
         processVideo();
       };
     }
 
     async function processVideo() {
-      // Sync internal canvas coordinate system to intrinsic video dimensions
       const displaySize = { width: video.videoWidth || 640, height: video.videoHeight || 480 };
       faceapi.matchDimensions(canvas, displaySize);
 
