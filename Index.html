@@ -131,7 +131,7 @@
     let videoTrack = null;
     let isTorchOn = false;
 
-    // --- Web Audio Beep ---
+    // --- High Loud Industrial Siren Alert ---
     function playAlertBeep() {
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -140,26 +140,41 @@
         audioCtx.resume();
       }
 
-      const beep = (frequency, startTime, duration) => {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(frequency, startTime);
-
-        gain.gain.setValueAtTime(0.2, startTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
-
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-
-        osc.start(startTime);
-        osc.stop(startTime + duration);
-      };
-
       const now = audioCtx.currentTime;
-      beep(880, now, 0.12);        // First alert tone
-      beep(880, now + 0.16, 0.18); // Second alert tone
+
+      // Master Gain for maximum clear output volume
+      const masterGain = audioCtx.createGain();
+      masterGain.gain.setValueAtTime(0.8, now);
+      masterGain.connect(audioCtx.destination);
+
+      // Twin Oscillators for a harsh, piercing industrial tone
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'square';
+
+      // 3 quick pulses alternating between 1300 Hz and 750 Hz
+      const pulseDuration = 0.12;
+      for (let i = 0; i < 3; i++) {
+        const t = now + i * (pulseDuration * 2);
+        // Piercing high pitch (with slight detune buzz)
+        osc1.frequency.setValueAtTime(1300, t);
+        osc2.frequency.setValueAtTime(1305, t);
+
+        // Harsh low pitch
+        osc1.frequency.setValueAtTime(750, t + pulseDuration);
+        osc2.frequency.setValueAtTime(755, t + pulseDuration);
+      }
+
+      osc1.connect(masterGain);
+      osc2.connect(masterGain);
+
+      const totalDuration = pulseDuration * 6;
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + totalDuration);
+      osc2.stop(now + totalDuration);
     }
 
     // --- Flash / Torch Controller ---
@@ -242,7 +257,7 @@
       if (track) setupTorch(track);
 
       video.onloadedmetadata = () => {
-        statusBox.textContent = "Camera ready. Tap screen once to ensure sound is enabled.";
+        statusBox.textContent = "Camera ready. Tap screen once to ensure loud siren is primed.";
         processVideo();
       };
     }
