@@ -115,8 +115,8 @@
 
   <script>
     const MATCH_THRESHOLD = 0.55;       // Distance cutoff (lower = stricter)
-    const REPEAT_WINDOW_SEC = 60;        // Flag if seen again within 60s
-    const DEBOUNCE_SEC = 5;              // Ignore if standing continuously in view
+    const REPEAT_WINDOW_SEC = 300;       // Flag if seen again within 5 minutes
+    const DEBOUNCE_SEC = 30;             // Delay: ignore repeats within 30 seconds
 
     let visitors = []; // [{ id, descriptor, timestamps: [] }]
     let nextId = 1;
@@ -142,27 +142,22 @@
 
       const now = audioCtx.currentTime;
 
-      // Master Gain for maximum clear output volume
       const masterGain = audioCtx.createGain();
       masterGain.gain.setValueAtTime(0.8, now);
       masterGain.connect(audioCtx.destination);
 
-      // Twin Oscillators for a harsh, piercing industrial tone
       const osc1 = audioCtx.createOscillator();
       const osc2 = audioCtx.createOscillator();
 
       osc1.type = 'sawtooth';
       osc2.type = 'square';
 
-      // 3 quick pulses alternating between 1300 Hz and 750 Hz
       const pulseDuration = 0.12;
       for (let i = 0; i < 3; i++) {
         const t = now + i * (pulseDuration * 2);
-        // Piercing high pitch (with slight detune buzz)
         osc1.frequency.setValueAtTime(1300, t);
         osc2.frequency.setValueAtTime(1305, t);
 
-        // Harsh low pitch
         osc1.frequency.setValueAtTime(750, t + pulseDuration);
         osc2.frequency.setValueAtTime(755, t + pulseDuration);
       }
@@ -218,7 +213,6 @@
     }
 
     async function init() {
-      // Audio unlock on user touch/click
       window.addEventListener('click', () => {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -257,7 +251,7 @@
       if (track) setupTorch(track);
 
       video.onloadedmetadata = () => {
-        statusBox.textContent = "Camera ready. Tap screen once to ensure loud siren is primed.";
+        statusBox.textContent = "Camera ready. Tap screen once to ensure sound is primed.";
         processVideo();
       };
     }
@@ -299,9 +293,10 @@
             const lastSeen = bestMatch.timestamps[bestMatch.timestamps.length - 1];
             const diff = now - lastSeen;
 
+            // Debounce check: within 30 seconds of registration / previous detection
             if (diff < DEBOUNCE_SEC) {
-              label = `ID #${bestMatch.id} (In Queue)`;
-              color = "#ffdd55"; // Yellow
+              label = `ID #${bestMatch.id} (Wait ${Math.ceil(DEBOUNCE_SEC - diff)}s)`;
+              color = "#ffdd55"; // Yellow (cooldown active, no alarm)
             } else if (diff <= REPEAT_WINDOW_SEC) {
               bestMatch.timestamps.push(now);
               label = `REPEAT ALERT: ID #${bestMatch.id}!`;
