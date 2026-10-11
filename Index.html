@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Queue Repeat Visitor Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #111;
+      color: #eee;
+      text-align: center;
+      margin: 0;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    h2 {
+      margin-top: 5px;
+      margin-bottom: 15px;
+      font-size: 1.25rem;
+    }
+    .container {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+    }
+    video {
+      display: block;
+      width: 100%;
+      max-width: 640px;
+      height: auto;
+      object-fit: cover;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    #status {
+      font-size: 0.9rem;
+      color: #aaa;
+      margin-top: 8px;
+    }
+    #log {
+      margin-top: 12px;
+      height: 160px;
+      overflow-y: auto;
+      text-align: left;
+      max-width: 640px;
+      margin-left: auto;
+      margin-right: auto;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+    .alert { color: #ff4d4d; font-weight: bold; }
+    .ok { color: #4dff88; }
+    .warn { color: #ffdd55; }
+  </style>
+</head>
+<body>
+  <h2>Queue Repeat Visitor Monitor</h2>
+  <div class="container">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="status">Tap anywhere on the screen to enable audio alert...</div>
+  <div id="log"></div>
+
+  <script>
+    const MATCH_THRESHOLD = 0.55;       // Distance cutoff (lower = stricter)
+    const REPEAT_WINDOW_SEC = 60;        // Flag if seen again within 60s
+    const DEBOUNCE_SEC = 5;              // Ignore if standing continuously in view
+
+    let visitors = []; // [{ id, descriptor, timestamps: [] }]
+    let nextId = 1;
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('overlay');
+    const logBox = document.getElementById('log');
+    const statusBox = document.getElementById('status');
+
+    let audioCtx = null;
+
+    function playAlertBeep() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+
+      const beep = (frequency, startTime, duration) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(frequency, startTime);
+
+        gain.gain.setValueAtTime(0.2, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start(startTime);
+        osc.stop(startTime + duration);
+      };
+
+      const now = audioCtx.currentTime;
+      beep(880, now, 0.12);        // First alert tone
+      beep(880, now + 0.16, 0.18); // Second alert tone
+    }
+
+    function log(msg, type = "ok") {
+      const p = document.createElement('div');
+      p.className = type;
+      p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logBox.prepend(p);
+    }
+
+    async function init() {
+      // Unlock audio context on first screen tap/click
+      window.addEventListener('click', () => {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        statusBox.textContent = "Audio active. Monitoring queue...";
+      }, { once: true });
+
+      statusBox.textContent = "Loading face models...";
+      const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+
+      statusBox.textContent = "Requesting back camera...";
+
+      let stream;
+      try {
+        // First try the strict environment (rear) camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { exact: "environment" },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+      } catch (err) {
+        // Fallback for browsers that don't support 'exact'
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+      }
+
+      video.srcObject = stream;
+      video.onloadedmetadata = () => {
+        statusBox.textContent = "Camera ready. Tap screen to ensure sound is enabled.";
+        processVideo();
+      };
+    }
+
+    async function processVideo() {
+      // Sync internal canvas coordinate system to intrinsic video dimensions
+      const displaySize = { width: video.videoWidth || 640, height: video.videoHeight || 480 };
+      faceapi.matchDimensions(canvas, displaySize);
+
+      setInterval(async () => {
+        if (video.paused || video.ended) return;
+
+        const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+          .withFaceLandmarks()
+          .withFaceDescriptors();
+
+        const resizedDetections = faceapi.resizeResults(detections, displaySize);
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const now = Date.now() / 1000;
+
+        for (const det of resizedDetections) {
+          const descriptor = det.descriptor;
+          let bestMatch = null;
+          let minDistance = Infinity;
+
+          for (const visitor of visitors) {
+            const dist = faceapi.euclideanDistance(descriptor, visitor.descriptor);
+            if (dist < minDistance) {
+              minDistance = dist;
+              bestMatch = visitor;
+            }
+          }
+
+          let label = "";
+          let color = "#4dff88"; // Green
+
+          if (minDistance < MATCH_THRESHOLD && bestMatch) {
+            const lastSeen = bestMatch.timestamps[bestMatch.timestamps.length - 1];
+            const diff = now - lastSeen;
+
+            if (diff < DEBOUNCE_SEC) {
+              label = `ID #${bestMatch.id} (In Queue)`;
+              color = "#ffdd55"; // Yellow
+            } else if (diff <= REPEAT_WINDOW_SEC) {
+              bestMatch.timestamps.push(now);
+              label = `REPEAT ALERT: ID #${bestMatch.id}!`;
+              color = "#ff4d4d"; // Red
+              log(`ALERT: Repeat visitor detected! ID #${bestMatch.id}`, "alert");
+              playAlertBeep();
+            } else {
+              bestMatch.timestamps.push(now);
+              label = `ID #${bestMatch.id} (Valid Return)`;
+              color = "#4dff88";
+              log(`ID #${bestMatch.id} returned after window elapsed`, "ok");
+            }
+          } else {
+            const id = nextId++;
+            visitors.push({ id, descriptor, timestamps: [now] });
+            label = `ID #${id} (New)`;
+            log(`New visitor registered: ID #${id}`, "ok");
+          }
+
+          const box = det.detection.box;
+          new faceapi.draw.DrawBox(box, { label, boxColor: color }).draw(canvas);
+        }
+      }, 300);
+    }
+
+    init().catch(err => {
+      console.error(err);
+      statusBox.textContent = `Error: ${err.message}. Make sure HTTPS is used.`;
+    });
+  </script>
+</body>
+</html>
